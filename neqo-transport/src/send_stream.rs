@@ -6,12 +6,14 @@
 
 // Buffering data to send until it is acked.
 
+use btree_slab::BTreeMap as SlabBTreeMap;
+
 use std::{
     cell::RefCell,
     cmp::{max, min, Ordering},
     collections::{BTreeMap, VecDeque},
     convert::TryFrom,
-    mem,
+    fmt, mem,
     ops::Add,
     rc::Rc,
 };
@@ -142,42 +144,130 @@ enum RangeState {
     Acked,
 }
 
+// Because there's no Debug trait for btree_slab::BtreeMap, we have to wrap it
+#[derive(Default, PartialEq)]
+pub struct RangeMap {
+    tree: SlabBTreeMap<u64, (u64, RangeState)>,
+    oldtree: BTreeMap<u64, (u64, RangeState)>,
+}
+
 /// Track ranges in the stream as sent or acked. Acked implies sent. Not in a
 /// range implies needing-to-be-sent, either initially or as a retransmission.
 #[derive(Debug, Default, PartialEq)]
 struct RangeTracker {
     // offset, (len, RangeState). Use u64 for len because ranges can exceed 32bits.
-    used: BTreeMap<u64, (u64, RangeState)>,
+    used: RangeMap,
+    cached: Option<(u64, Option<u64>)>,
+}
+
+// XXX HACK
+impl fmt::Debug for RangeMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Hi")
+    }
 }
 
 impl RangeTracker {
     fn highest_offset(&self) -> u64 {
-        self.used
+        let slab = self
+            .used
+            .tree
             .range(..)
             .next_back()
-            .map_or(0, |(k, (v, _))| *k + *v)
+            .map_or(0, |(k, (v, _))| *k + *v);
+        let old = self
+            .used
+            .oldtree
+            .range(..)
+            .next_back()
+            .map_or(0, |(k, (v, _))| *k + *v);
+        assert_eq!(slab, old);
+        slab
     }
 
     fn acked_from_zero(&self) -> u64 {
-        self.used
+        let slab = self
+            .used
+            .tree
             .get(&0)
             .filter(|(_, state)| *state == RangeState::Acked)
-            .map_or(0, |(v, _)| *v)
+            .map_or(0, |(v, _)| *v);
+        let old = self
+            .used
+            .tree
+            .get(&0)
+            .filter(|(_, state)| *state == RangeState::Acked)
+            .map_or(0, |(v, _)| *v);
+        assert_eq!(slab, old);
+        slab
     }
 
     /// Find the first unmarked range. If all are contiguous, this will return
     /// (highest_offset(), None).
-    fn first_unmarked_range(&self) -> (u64, Option<u64>) {
+    fn first_unmarked_range(&mut self) -> (u64, Option<u64>) {
+        let old = self.first_unmarked_range_old();
         let mut prev_end = 0;
+        if self.cached.is_some() {
+            if self.cached.expect("").1.is_some() {
+                qdebug!(
+                    "first_unmarked_range cached {}, {}",
+                    self.cached.expect("").0,
+                    self.cached.expect("").1.expect("")
+                );
+            } else {
+                qdebug!("first_unmarked_range {}, None", self.cached.expect("").0);
+            }
 
-        for (cur_off, (cur_len, _)) in &self.used {
+            assert_eq!(old, self.cached.expect(""));
+            return self.cached.expect("");
+        }
+        for (cur_off, (cur_len, _)) in &self.used.tree {
+            if prev_end == *cur_off {
+                prev_end = cur_off + cur_len;
+            } else {
+                self.cached = Some((prev_end, Some(cur_off - prev_end)));
+                if self.cached.expect("").1.is_some() {
+                    qdebug!(
+                        "first_unmarked_range {}, {}",
+                        self.cached.expect("").0,
+                        self.cached.expect("").1.expect("")
+                    );
+                } else {
+                    qdebug!("first_unmarked_range {}, None", self.cached.expect("").0);
+                }
+
+                assert_eq!(old, self.cached.expect(""));
+                return self.cached.expect("");
+            }
+        }
+        self.cached = Some((prev_end, None));
+        if self.cached.expect("").1.is_some() {
+            qdebug!(
+                "first_unmarked_range {}, {}",
+                self.cached.expect("").0,
+                self.cached.expect("").1.expect("")
+            );
+        } else {
+            qdebug!("first_unmarked_range {}, None", self.cached.expect("").0);
+        }
+
+        assert_eq!(old, self.cached.expect(""));
+        return self.cached.expect("");
+    }
+
+    /// Find the first unmarked range. If all are contiguous, this will return
+    /// (highest_offset(), None).
+    fn first_unmarked_range_old(&mut self) -> (u64, Option<u64>) {
+        let mut prev_end = 0;
+        for (cur_off, (cur_len, _)) in &self.used.oldtree {
             if prev_end == *cur_off {
                 prev_end = cur_off + cur_len;
             } else {
                 return (prev_end, Some(cur_off - prev_end));
             }
         }
-        (prev_end, None)
+
+        return (prev_end, None);
     }
 
     /// Turn one range into a list of subranges that align with existing
@@ -208,19 +298,80 @@ impl RangeTracker {
         let mut tmp_len = new_len;
         let mut v = Vec::new();
 
+        qdebug!(
+            "chunk_range_on_edges {} len {} {}",
+            new_off,
+            new_len,
+            if new_state == RangeState::Sent {
+                "Sent"
+            } else {
+                "Acked"
+            }
+        );
+        //        self.dump_trees();
+
         // cut previous overlapping range if needed
-        let prev = self.used.range_mut(..tmp_off).next_back();
+        let prevvec = self.used.tree.range_mut(..tmp_off).collect::<Vec<_>>();
+        let oldprevvec = self.used.oldtree.range_mut(..tmp_off).collect::<Vec<_>>();
+        assert_eq!(oldprevvec, prevvec);
+
+        let prev = self.used.tree.range_mut(..tmp_off).next_back();
+        let oldprev = self.used.oldtree.range_mut(..tmp_off).next_back();
+        assert_eq!(oldprev, prev);
+
         if let Some((prev_off, (prev_len, prev_state))) = prev {
             let prev_state = *prev_state;
             let overlap = (*prev_off + *prev_len).saturating_sub(new_off);
             *prev_len -= overlap;
             if overlap > 0 {
-                self.used.insert(new_off, (overlap, prev_state));
+                qdebug!(
+                    "insert {}, ({}, {})",
+                    new_off,
+                    overlap,
+                    if prev_state == RangeState::Sent {
+                        "Sent"
+                    } else {
+                        "Acked"
+                    }
+                );
+                self.used.tree.insert(new_off, (overlap, prev_state));
             }
         }
+        if let Some((prev_off, (prev_len, prev_state))) = oldprev {
+            let prev_state = *prev_state;
+            let overlap = (*prev_off + *prev_len).saturating_sub(new_off);
+            *prev_len -= overlap;
+            if overlap > 0 {
+                qdebug!(
+                    "old insert {}, ({}, {})",
+                    new_off,
+                    overlap,
+                    if prev_state == RangeState::Sent {
+                        "Sent"
+                    } else {
+                        "Acked"
+                    }
+                );
+                self.used.oldtree.insert(new_off, (overlap, prev_state));
+            }
+        }
+        self.compare_trees();
 
         let mut last_existing_remaining = None;
-        for (off, (len, state)) in self.used.range(tmp_off..tmp_off + tmp_len) {
+        //        let newer: Vec<(&u64, &(u64, RangeState))> =
+        //            self.used.tree.range(tmp_off..tmp_off + tmp_len).collect();
+        //        let old: Vec<(&u64, &(u64, RangeState))> = self
+        //            .used
+        //            .oldtree
+        //            .range(tmp_off..tmp_off + tmp_len)
+        //            .collect();
+        //        assert_eq!(old, newer);
+
+        let mut old_last_existing_remaining = last_existing_remaining;
+        let mut old_tmp_off = tmp_off;
+        let mut old_tmp_len = tmp_len;
+        let mut old_v = v.clone();
+        for (off, (len, state)) in self.used.tree.range(tmp_off..tmp_off + tmp_len) {
             // Create chunk for "overhang" before an existing range
             if tmp_off < *off {
                 let sub_len = off - tmp_off;
@@ -251,15 +402,89 @@ impl RangeTracker {
             }
         }
 
+        for (off, (len, state)) in self
+            .used
+            .oldtree
+            .range(old_tmp_off..old_tmp_off + old_tmp_len)
+        {
+            // Create chunk for "overhang" before an existing range
+            if old_tmp_off < *off {
+                let sub_len = off - old_tmp_off;
+                old_v.push((old_tmp_off, sub_len, new_state));
+                old_tmp_off += sub_len;
+                old_tmp_len -= sub_len;
+            }
+
+            // Create chunk to match existing range
+            let sub_len = min(*len, old_tmp_len);
+            let remaining_len = len - sub_len;
+            if new_state == RangeState::Sent && *state == RangeState::Acked {
+                qinfo!(
+                    "old: Attempted to downgrade overlapping range Acked range {}-{} with Sent {}-{}",
+                    off,
+                    len,
+                    new_off,
+                    new_len
+                );
+            } else {
+                old_v.push((old_tmp_off, sub_len, new_state));
+            }
+            old_tmp_off += sub_len;
+            old_tmp_len -= sub_len;
+
+            if remaining_len > 0 {
+                old_last_existing_remaining = Some((*off, sub_len, remaining_len, *state));
+            }
+        }
+        assert_eq!(old_tmp_off, tmp_off);
+        assert_eq!(old_tmp_len, tmp_len);
+        assert_eq!(old_last_existing_remaining, last_existing_remaining);
+        assert_eq!(old_v, v);
+
         // Maybe break last existing range in two so that a final chunk will
         // have the same length as an existing range entry
         if let Some((off, sub_len, remaining_len, state)) = last_existing_remaining {
-            *self.used.get_mut(&off).expect("must be there") = (sub_len, state);
-            self.used.insert(off + sub_len, (remaining_len, state));
+            qdebug!(
+                "modify {}, ({}, {})",
+                off,
+                sub_len,
+                if state == RangeState::Sent {
+                    "Sent"
+                } else {
+                    "Acked"
+                }
+            );
+            *self.used.tree.get_mut(&off).expect("must be there") = (sub_len, state);
+            *self.used.oldtree.get_mut(&off).expect("must be there") = (sub_len, state);
+            qdebug!(
+                "insert {}, ({}, {})",
+                off + sub_len,
+                remaining_len,
+                if state == RangeState::Sent {
+                    "Sent"
+                } else {
+                    "Acked"
+                }
+            );
+            self.used.tree.insert(off + sub_len, (remaining_len, state));
+            self.used
+                .oldtree
+                .insert(off + sub_len, (remaining_len, state));
+            self.compare_trees();
         }
 
         // Create final chunk if anything remains of the new range
         if tmp_len > 0 {
+            qdebug!(
+                "final {}, ({}, {})",
+                tmp_off,
+                tmp_len,
+                if new_state == RangeState::Sent {
+                    "Sent"
+                } else {
+                    "Acked"
+                }
+            );
             v.push((tmp_off, tmp_len, new_state))
         }
 
@@ -269,11 +494,19 @@ impl RangeTracker {
     /// Merge contiguous Acked ranges into the first entry (0). This range may
     /// be dropped from the send buffer.
     fn coalesce_acked_from_zero(&mut self) {
+        self.coalesce_acked_from_zero_old();
         let acked_range_from_zero = self
             .used
+            .tree
             .get_mut(&0)
             .filter(|(_, state)| *state == RangeState::Acked)
             .map(|(len, _)| *len);
+        if acked_range_from_zero.is_some() {
+            qdebug!(
+                "coalesce_acked_from_zero {}",
+                acked_range_from_zero.unwrap()
+            );
+        }
 
         if let Some(len_from_zero) = acked_range_from_zero {
             let mut to_remove = SmallVec::<[_; 8]>::new();
@@ -283,6 +516,7 @@ impl RangeTracker {
             // See if there's another Acked range entry contiguous to this one
             while let Some((next_len, _)) = self
                 .used
+                .tree
                 .get(&new_len_from_zero)
                 .filter(|(_, state)| *state == RangeState::Acked)
             {
@@ -291,44 +525,159 @@ impl RangeTracker {
             }
 
             if len_from_zero != new_len_from_zero {
-                self.used.get_mut(&0).expect("must be there").0 = new_len_from_zero;
+                qdebug!("new_len_from_zero {}", new_len_from_zero);
+                self.used.tree.get_mut(&0).expect("must be there").0 = new_len_from_zero;
             }
 
             for val in to_remove {
-                self.used.remove(&val);
+                qdebug!("remove {}", val);
+                self.used.tree.remove(&val);
+            }
+        }
+        self.compare_trees();
+    }
+
+    fn coalesce_acked_from_zero_old(&mut self) {
+        let acked_range_from_zero = self
+            .used
+            .oldtree
+            .get_mut(&0)
+            .filter(|(_, state)| *state == RangeState::Acked)
+            .map(|(len, _)| *len);
+        if acked_range_from_zero.is_some() {
+            qdebug!(
+                "coalesce_acked_from_zero {}",
+                acked_range_from_zero.unwrap()
+            );
+        }
+
+        if let Some(len_from_zero) = acked_range_from_zero {
+            let mut to_remove = SmallVec::<[_; 8]>::new();
+
+            let mut new_len_from_zero = len_from_zero;
+
+            // See if there's another Acked range entry contiguous to this one
+            while let Some((next_len, _)) = self
+                .used
+                .oldtree
+                .get(&new_len_from_zero)
+                .filter(|(_, state)| *state == RangeState::Acked)
+            {
+                to_remove.push(new_len_from_zero);
+                new_len_from_zero += *next_len;
+            }
+
+            if len_from_zero != new_len_from_zero {
+                qdebug!("new_len_from_zero {}", new_len_from_zero);
+                self.used.oldtree.get_mut(&0).expect("must be there").0 = new_len_from_zero;
+            }
+
+            for val in to_remove {
+                qdebug!("remove {}", val);
+                self.used.oldtree.remove(&val);
             }
         }
     }
 
+    fn dump_trees(&self) {
+        qdebug!("new tree: ");
+        for (key, (val, state)) in self.used.tree.range(..) {
+            qdebug!(
+                "{}: ({}, {})",
+                key,
+                val,
+                if *state == RangeState::Acked {
+                    "Acked"
+                } else {
+                    "Sent"
+                }
+            );
+        }
+        qdebug!("old tree: ");
+        for (key, (val, state)) in self.used.oldtree.range(..) {
+            qdebug!(
+                "{}: ({}, {})",
+                key,
+                val,
+                if *state == RangeState::Acked {
+                    "Acked"
+                } else {
+                    "Sent"
+                }
+            );
+        }
+    }
+
+    fn compare_trees(&self) {
+        let all_keys: Vec<_> = self.used.tree.keys().collect();
+        let old_keys: Vec<_> = self.used.oldtree.keys().collect();
+        if all_keys != old_keys {
+            self.dump_trees();
+        }
+        assert_eq!(all_keys, old_keys);
+        let all_vals: Vec<_> = self.used.tree.values().collect();
+        let old_vals: Vec<_> = self.used.oldtree.values().collect();
+        if all_vals != old_vals {
+            self.dump_trees();
+        }
+        assert_eq!(all_vals, old_vals);
+    }
+
     fn mark_range(&mut self, off: u64, len: usize, state: RangeState) {
+        qdebug!(
+            "mark-range: {} len {} state {}",
+            off,
+            len,
+            if state == RangeState::Sent {
+                "Sent"
+            } else {
+                "Acked"
+            }
+        );
         if len == 0 {
             qinfo!("mark 0-length range at {}", off);
             return;
         }
 
+        self.cached = None;
         let subranges = self.chunk_range_on_edges(off, len as u64, state);
+        self.compare_trees();
 
         for (sub_off, sub_len, sub_state) in subranges {
-            self.used.insert(sub_off, (sub_len, sub_state));
+            self.used.tree.insert(sub_off, (sub_len, sub_state));
+            self.used.oldtree.insert(sub_off, (sub_len, sub_state));
         }
+        self.compare_trees();
 
-        self.coalesce_acked_from_zero()
+        self.coalesce_acked_from_zero();
+        self.compare_trees();
     }
 
     fn unmark_range(&mut self, off: u64, len: usize) {
+        qdebug!("unmark-range: {} len {}", off, len);
         if len == 0 {
             qdebug!("unmark 0-length range at {}", off);
             return;
         }
 
+        self.cached = None;
         let len = u64::try_from(len).unwrap();
         let end_off = off + len;
 
         let mut to_remove = SmallVec::<[_; 8]>::new();
         let mut to_add = None;
+        let mut old_to_remove = SmallVec::<[_; 8]>::new();
+        let mut old_to_add = None;
 
         // Walk backwards through possibly affected existing ranges
-        for (cur_off, (cur_len, cur_state)) in self.used.range_mut(..off + len).rev() {
+        let newer: Vec<(&u64, &mut (u64, RangeState))> =
+            self.used.tree.range_mut(..off + len).rev().collect();
+        let old: Vec<(&u64, &mut (u64, RangeState))> =
+            self.used.oldtree.range_mut(..off + len).rev().collect();
+        assert_eq!(old, newer);
+
+        self.compare_trees();
+        for (cur_off, (cur_len, cur_state)) in self.used.tree.range_mut(..off + len).rev() {
             // Maybe fixup range preceding the removed range
             if *cur_off < off {
                 // Check for overlap
@@ -371,18 +720,71 @@ impl RangeTracker {
 
             to_remove.push(*cur_off);
         }
+        for (cur_off, (cur_len, cur_state)) in self.used.oldtree.range_mut(..off + len).rev() {
+            // Maybe fixup range preceding the removed range
+            if *cur_off < off {
+                // Check for overlap
+                if *cur_off + *cur_len > off {
+                    if *cur_state == RangeState::Acked {
+                        qdebug!(
+                            "Attempted to unmark Acked range {}-{} with unmark_range {}-{}",
+                            cur_off,
+                            cur_len,
+                            off,
+                            off + len
+                        );
+                    } else {
+                        *cur_len = off - cur_off;
+                    }
+                }
+                break;
+            }
+
+            if *cur_state == RangeState::Acked {
+                qdebug!(
+                    "Attempted to unmark Acked range {}-{} with unmark_range {}-{}",
+                    cur_off,
+                    cur_len,
+                    off,
+                    off + len
+                );
+                continue;
+            }
+
+            // Add a new range for old subrange extending beyond
+            // to-be-unmarked range
+            let cur_end_off = cur_off + *cur_len;
+            if cur_end_off > end_off {
+                let new_cur_off = off + len;
+                let new_cur_len = cur_end_off - end_off;
+                assert_eq!(old_to_add, None);
+                old_to_add = Some((new_cur_off, new_cur_len, *cur_state));
+            }
+
+            old_to_remove.push(*cur_off);
+        }
+        assert_eq!(old_to_add, to_add);
+        assert_eq!(old_to_remove, to_remove);
+        self.compare_trees();
 
         for remove_off in to_remove {
-            self.used.remove(&remove_off);
+            self.used.tree.remove(&remove_off);
+            self.used.oldtree.remove(&remove_off);
         }
+        self.compare_trees();
 
         if let Some((new_cur_off, new_cur_len, cur_state)) = to_add {
-            self.used.insert(new_cur_off, (new_cur_len, cur_state));
+            self.used.tree.insert(new_cur_off, (new_cur_len, cur_state));
+            self.used
+                .oldtree
+                .insert(new_cur_off, (new_cur_len, cur_state));
         }
+        self.compare_trees();
     }
 
     /// Unmark all sent ranges.
     pub fn unmark_sent(&mut self) {
+        qdebug!("unmark_sent");
         self.unmark_range(0, usize::try_from(self.highest_offset()).unwrap());
     }
 }
@@ -410,7 +812,7 @@ impl TxBuffer {
         can_buffer
     }
 
-    pub fn next_bytes(&self) -> Option<(u64, &[u8])> {
+    pub fn next_bytes(&mut self) -> Option<(u64, &[u8])> {
         let (start, maybe_len) = self.ranges.first_unmarked_range();
 
         if start == self.retired + u64::try_from(self.buffered()).unwrap() {
@@ -772,14 +1174,18 @@ impl SendStream {
     /// offset.
     fn next_bytes(&mut self, retransmission_only: bool) -> Option<(u64, &[u8])> {
         match self.state {
-            SendStreamState::Send { ref send_buf, .. } => {
-                send_buf.next_bytes().and_then(|(offset, slice)| {
+            SendStreamState::Send {
+                ref mut send_buf, ..
+            } => {
+                let result = send_buf.next_bytes();
+                if result.is_some() {
+                    let (offset, slice) = result.unwrap();
                     if retransmission_only {
-                        qtrace!(
-                            [self],
-                            "next_bytes apply retransmission limit at {}",
-                            self.retransmission_offset
-                        );
+                        //                        qtrace!(
+                        //                            [self],
+                        //                            "next_bytes apply retransmission limit at {}",
+                        //                            self.retransmission_offset
+                        //                        );
                         if self.retransmission_offset > offset {
                             let len = min(
                                 usize::try_from(self.retransmission_offset - offset).unwrap(),
@@ -792,21 +1198,25 @@ impl SendStream {
                     } else {
                         Some((offset, slice))
                     }
-                })
+                } else {
+                    None
+                }
             }
             SendStreamState::DataSent {
-                ref send_buf,
+                ref mut send_buf,
                 fin_sent,
                 ..
             } => {
+                let used = send_buf.used(); // immutable first
                 let bytes = send_buf.next_bytes();
                 if bytes.is_some() {
-                    bytes
+                    let (offset, slice) = bytes.unwrap();
+                    Some((offset, slice))
                 } else if fin_sent {
                     None
                 } else {
                     // Send empty stream frame with fin set
-                    Some((send_buf.used(), &[]))
+                    Some((used, &[]))
                 }
             }
             SendStreamState::Ready { .. }
