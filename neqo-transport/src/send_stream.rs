@@ -35,7 +35,9 @@ use crate::{
     AppError, Error, Res,
 };
 
+#[cfg(bench)]
 use std::sync::atomic::AtomicUsize;
+#[cfg(bench)]
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 pub const SEND_BUFFER_SIZE: usize = 0x10_0000; // 1 MiB
@@ -152,10 +154,11 @@ pub struct RangeTracker {
     // offset, (len, RangeState). Use u64 for len because ranges can exceed 32bits.
     used: BTreeMap<u64, (u64, RangeState)>,
     cached: Option<(u64, Option<u64>)>,
-    dumped: bool,
+    #[cfg(bench)]
     id: usize,
 }
 
+#[cfg(bench)]
 fn get_id() -> usize {
     static COUNTER: AtomicUsize = AtomicUsize::new(1);
     COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
@@ -166,7 +169,7 @@ impl Default for RangeTracker {
         Self {
             used: BTreeMap::new(),
             cached: None,
-            dumped: false,
+            #[cfg(bench)]
             id: get_id(),
         }
     }
@@ -187,6 +190,7 @@ impl RangeTracker {
             .map_or(0, |(v, _)| *v)
     }
 
+    #[cfg(debug)]
     fn dump_trees(&self) {
         qerror!("tree: ");
         for (key, (val, state)) in self.used.range(..) {
@@ -205,33 +209,21 @@ impl RangeTracker {
 
     /// Find the first unmarked range. If all are contiguous, this will return
     /// (highest_offset(), None).
-    pub fn first_unmarked_range(&mut self) -> (u64, Option<u64>) {
+    pub fn first_unmarked_range(&self) -> (u64, Option<u64>) {
         #[cfg(trace)]
         qerror!("*** {} first_unmarked_range();", self.id);
         let mut prev_end = 0;
 
-        #[cfg(debugtrace)]
-        if self.cached.is_some() {
-            return self.cached.unwrap();
-        }
-
-        #[cfg(debugtrace)]
+        #[cfg(debug)]
         qerror!("first_unmarked_range len={}", self.used.len());
-        if !self.dumped && self.used.len() > 10 {
-            #[cfg(debugtrace)]
-            self.dump_trees();
-            self.dumped = true;
-        }
 
         for (cur_off, (cur_len, _)) in &self.used {
             if prev_end == *cur_off {
                 prev_end = cur_off + cur_len;
             } else {
-                self.cached = Some((prev_end, Some(cur_off - prev_end)));
-                return self.cached.unwrap();
+                return (prev_end, Some(cur_off - prev_end));
             }
         }
-        self.cached = Some((prev_end, None));
         (prev_end, None)
     }
 
@@ -253,14 +245,13 @@ impl RangeTracker {
     //
     // Doing all this work up front should make handling each chunk much
     // easier.
-    pub fn chunk_range_on_edges(
+    fn chunk_range_on_edges(
         &mut self,
         new_off: u64,
         new_len: u64,
         new_state: RangeState,
     ) -> Vec<(u64, u64, RangeState)> {
-        //        #[cfg(trace)]
-        #[cfg(debugtrace)]
+        #[cfg(trace)]
         qerror!(
             "*** {} chunk_range_on_edges({}, {}, {});",
             self.id,
@@ -275,29 +266,6 @@ impl RangeTracker {
         let mut tmp_off = new_off;
         let mut tmp_len = new_len;
         let mut v = Vec::new();
-
-        // Check for the common case of adding to the end
-        if let Some(mut last) = self.used.last_entry() {
-            let prev_off = *last.key();
-            let (prev_len, prev_state) = last.get_mut();
-            if new_off == prev_off + *prev_len && new_state == *prev_state {
-                #[cfg(debugtrace)]
-                qerror!("Extending {} to len {}", prev_off, *prev_len + new_len);
-                // simple case, extend the last entry
-                *prev_len += new_len;
-
-                return v;
-            } else {
-                #[cfg(debugtrace)]
-                qerror!(
-                    "Not extending {} to {} (prev_off+prev_len {}, new_off {})",
-                    prev_off,
-                    *prev_len + new_len,
-                    prev_off + *prev_len,
-                    new_off
-                );
-            }
-        }
 
         // cut previous overlapping range if needed
         let prev = self.used.range_mut(..tmp_off).next_back();
@@ -392,8 +360,7 @@ impl RangeTracker {
     }
 
     pub fn mark_range(&mut self, off: u64, len: usize, state: RangeState) {
-        //        #[cfg(trace)]
-        #[cfg(debugtrace)]
+        #[cfg(trace)]
         qerror!(
             "*** {} mark_range({}, {}, {});",
             self.id,
@@ -411,7 +378,6 @@ impl RangeTracker {
             return;
         }
 
-        self.cached = None;
         let subranges = self.chunk_range_on_edges(off, len as u64, state);
 
         for (sub_off, sub_len, sub_state) in subranges {
@@ -429,7 +395,6 @@ impl RangeTracker {
             return;
         }
 
-        self.cached = None;
         let len = u64::try_from(len).unwrap();
         let end_off = off + len;
 
@@ -519,7 +484,7 @@ impl TxBuffer {
         can_buffer
     }
 
-    pub fn next_bytes(&mut self) -> Option<(u64, &[u8])> {
+    pub fn next_bytes(&self) -> Option<(u64, &[u8])> {
         let (start, maybe_len) = self.ranges.first_unmarked_range();
 
         if start == self.retired + u64::try_from(self.buffered()).unwrap() {
@@ -881,18 +846,14 @@ impl SendStream {
     /// offset.
     fn next_bytes(&mut self, retransmission_only: bool) -> Option<(u64, &[u8])> {
         match self.state {
-            SendStreamState::Send {
-                ref mut send_buf, ..
-            } => {
-                let result = send_buf.next_bytes();
-                if result.is_some() {
-                    let (offset, slice) = result.unwrap();
+            SendStreamState::Send { ref send_buf, .. } => {
+                send_buf.next_bytes().and_then(|(offset, slice)| {
                     if retransmission_only {
-                        //                        qtrace!(
-                        //                            [self],
-                        //                            "next_bytes apply retransmission limit at {}",
-                        //                            self.retransmission_offset
-                        //                        );
+                        qtrace!(
+                            [self],
+                            "next_bytes apply retransmission limit at {}",
+                            self.retransmission_offset
+                        );
                         if self.retransmission_offset > offset {
                             let len = min(
                                 usize::try_from(self.retransmission_offset - offset).unwrap(),
@@ -905,25 +866,21 @@ impl SendStream {
                     } else {
                         Some((offset, slice))
                     }
-                } else {
-                    None
-                }
+                })
             }
             SendStreamState::DataSent {
-                ref mut send_buf,
+                ref send_buf,
                 fin_sent,
                 ..
             } => {
-                let used = send_buf.used(); // immutable first
                 let bytes = send_buf.next_bytes();
                 if bytes.is_some() {
-                    let (offset, slice) = bytes.unwrap();
-                    Some((offset, slice))
+                    bytes
                 } else if fin_sent {
                     None
                 } else {
                     // Send empty stream frame with fin set
-                    Some((used, &[]))
+                    Some((send_buf.used(), &[]))
                 }
             }
             SendStreamState::Ready { .. }
