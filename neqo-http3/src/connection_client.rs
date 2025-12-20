@@ -937,6 +937,31 @@ impl Http3Client {
             .stats(&mut self.conn)
     }
 
+    /// Export WebTransport keying material per
+    /// [draft-ietf-webtrans-http3 §4.8](https://www.ietf.org/archive/id/draft-ietf-webtrans-http3-15.html#section-4.8).
+    ///
+    /// Derives keying material scoped to a specific WebTransport session
+    /// by calling the TLS exporter with label `"EXPORTER-WebTransport"`
+    /// and a context struct that binds the session ID, application label,
+    /// and application context together.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidStreamId` if `session_id` does not
+    /// correspond to an active WebTransport session,
+    /// `Error::InvalidInput` if `out` is empty or `label`/`context`
+    ///  exceed 255 bytes, or `Error::Transport` if the TLS export fails.
+    pub fn webtransport_export_keying_material(
+        &self,
+        session_id: StreamId,
+        label: &[u8],
+        context: &[u8],
+        out: &mut [u8],
+    ) -> Res<()> {
+        self.base_handler.validate_wt_session(session_id)?;
+        crate::webtransport_export_keying_material(&self.conn, session_id, label, context, out)
+    }
+
     /// This function combines  `process_input` and `process_output` function.
     pub fn process<A: AsRef<[u8]> + AsMut<[u8]>>(
         &mut self,

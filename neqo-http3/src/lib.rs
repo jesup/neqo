@@ -171,7 +171,7 @@ pub use connection::{Http3State, SessionAcceptAction};
 pub use connection_client::Http3Client;
 use frames::HFrame;
 pub use neqo_common::Header;
-use neqo_common::MessageType;
+use neqo_common::{Encoder, MessageType};
 use neqo_qpack::Error as QpackError;
 use neqo_transport::{AppError, Connection, Error as TransportError, recv_stream, send_stream};
 pub use neqo_transport::{Output, StreamId, streams::SendOrder};
@@ -406,6 +406,31 @@ impl From<QpackError> for Error {
             e => Self::Qpack(e),
         }
     }
+}
+
+fn webtransport_export_keying_material(
+    conn: &Connection,
+    session_id: StreamId,
+    label: &[u8],
+    context: &[u8],
+    out: &mut [u8],
+) -> Res<()> {
+    if out.is_empty() || label.len() > 255 || context.len() > 255 {
+        return Err(Error::InvalidInput);
+    }
+
+    let mut wt_context = Encoder::with_capacity(
+        Encoder::varint_len(session_id.as_u64()) + 1 + label.len() + 1 + context.len(),
+    );
+    wt_context.encode_varint(session_id.as_u64());
+    wt_context.encode_vec(1, label);
+    wt_context.encode_vec(1, context);
+
+    conn.export_keying_material("EXPORTER-WebTransport", wt_context.as_ref(), out)
+        .map_err(|e| match e {
+            TransportError::InvalidInput => Error::InvalidInput,
+            other => Error::Transport(other),
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

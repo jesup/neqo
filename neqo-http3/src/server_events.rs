@@ -380,6 +380,30 @@ impl WebTransportRequest {
             ))
             .map_err(|_| Error::Internal)?)
     }
+
+    /// Export keying material for this WebTransport session
+    /// (draft-ietf-webtrans-http3 §4.8).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidStreamId` if the session is no longer active,
+    /// `Error::InvalidInput` if `out` is empty or `label`/`context`
+    /// exceed 255 bytes, or `Error::Transport` if the connection is not ready
+    /// or the TLS export fails.
+    pub fn export_keying_material(&self, label: &[u8], context: &[u8], out: &mut [u8]) -> Res<()> {
+        let session_id = self.stream_handler.stream_id();
+        self.stream_handler
+            .handler
+            .borrow()
+            .validate_wt_session(session_id)?;
+        crate::webtransport_export_keying_material(
+            &self.stream_handler.conn.borrow(),
+            session_id,
+            label,
+            context,
+            out,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
