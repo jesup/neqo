@@ -458,6 +458,10 @@ enum ReceiveOutput {
 
 trait Stream: Debug {
     fn stream_type(&self) -> Http3StreamType;
+
+    fn session_protocol(&self) -> Option<String> {
+        None
+    }
 }
 
 trait RecvStream: Stream {
