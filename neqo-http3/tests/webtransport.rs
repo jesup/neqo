@@ -711,3 +711,23 @@ fn wt_export_keying_material_transport_error() {
         Err(neqo_http3::Error::Transport(_))
     ));
 }
+
+#[test]
+fn wt_send_goaway() {
+    let (mut client, mut server, wt_session) = setup_wt();
+    let session_id = wt_session.stream_id();
+
+    let goaway_stream_id = StreamId::new(session_id.as_u64() + 4);
+    server.send_goaway(goaway_stream_id);
+    exchange_packets(&mut client, &mut server, false, None);
+
+    let events: Vec<Http3ClientEvent> = client.events().collect();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Http3ClientEvent::GoawayReceived)),
+        "client should receive GoawayReceived"
+    );
+    assert_eq!(client.state(), Http3State::GoingAway(goaway_stream_id));
+}
