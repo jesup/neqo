@@ -778,7 +778,7 @@ impl Http3Client {
         error: u32,
         message: &str,
         now: Instant,
-    ) -> Res<()> {
+    ) -> Res<WebTransportSessionStats> {
         self.base_handler.webtransport_close_session(
             &mut self.conn,
             session_id,
