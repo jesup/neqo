@@ -296,7 +296,7 @@ impl Http3ServerHandler {
 
     pub(crate) fn validate_wt_session(&self, session_id: StreamId) -> Res<()> {
         self.base_handler
-            .validate_wt_session(session_id)
+            .validate_webtransport_session(session_id)
             .map(|_| ())
     }
 
@@ -328,6 +328,21 @@ impl Http3ServerHandler {
         self.base_handler
             .queue_control_frame(&HFrame::Goaway { stream_id });
         self.needs_processing = true;
+    }
+
+    /// Write a `WT_DRAIN_SESSION` capsule to the given WebTransport session's send stream.
+    ///
+    /// Only used in tests to simulate the server initiating graceful session drain.
+    #[cfg(test)]
+    pub fn test_webtransport_drain_session(
+        &mut self,
+        conn: &mut Connection,
+        session_id: StreamId,
+        now: Instant,
+    ) -> Res<()> {
+        self.needs_processing = true;
+        self.base_handler
+            .test_webtransport_drain_session(conn, session_id, now)
     }
 
     /// Whether this connection has events to process or data to send.
