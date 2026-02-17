@@ -215,9 +215,6 @@ pub struct CongestionControlStats {
     /// occurred or Cubic is not in use. Recorded as a stat to approximate a connection's ideal
     /// congestion window in metrics.
     pub w_max: Option<f64>,
-    /// The current congestion window size (in bytes). Updated throughout the connection
-    /// lifetime.
-    pub cwnd: Option<usize>,
 }
 
 /// ECN counts by QUIC [`packet::Type`].
@@ -390,6 +387,10 @@ pub struct Stats {
     pub bytes_lost: usize,
     /// Total bytes in acknowledged packets.
     pub bytes_acked: usize,
+    /// Congestion window size.
+    pub cwnd: usize,
+    /// Bytes in flight (sent but not yet acked or declared lost).
+    pub bytes_in_flight: usize,
 
     /// ECN path validation count, indexed by validation outcome.
     pub ecn_path_validation: ecn::ValidationCount,
@@ -476,8 +477,8 @@ impl Debug for Stats {
         )?;
         writeln!(
             f,
-            "    final_cwnd {:?} ss_exit_cwnd {:?} ss_exit_reason {:?}",
-            self.cc.cwnd, self.cc.slow_start_exit_cwnd, self.cc.slow_start_exit_reason
+            "    ss_exit_cwnd {:?} ss_exit_reason {:?}",
+            self.cc.slow_start_exit_cwnd, self.cc.slow_start_exit_reason
         )?;
         writeln!(
             f,
@@ -513,7 +514,12 @@ impl Debug for Stats {
             "  bytes: rx {} lost {} acked {}",
             self.bytes_rx, self.bytes_lost, self.bytes_acked
         )?;
-        writeln!(f, "  min_rtt: {:?}", self.min_rtt)
+        writeln!(f, "  min_rtt: {:?}", self.min_rtt)?;
+        writeln!(
+            f,
+            "  cwnd: {} bytes_in_flight: {}",
+            self.cwnd, self.bytes_in_flight
+        )
     }
 }
 
@@ -591,7 +597,7 @@ fn debug() {
   tx: 0 lost 0 lateack 0 ptoack 0 unackdrop 0
   cc:
     ce_loss 0 ce_ecn 0 ce_spurious 0
-    final_cwnd None ss_exit_cwnd None ss_exit_reason None
+    ss_exit_cwnd None ss_exit_reason None
   pmtud: 0 sent 0 acked 0 lost 0 iface_mtu None peer_max_udp_payload 0 pmtu
   resumed: false
   frames rx:
