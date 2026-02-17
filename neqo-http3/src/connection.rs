@@ -1432,7 +1432,7 @@ impl Http3Connection {
     ) -> Res<extended_connect::stats::WebTransportSessionStats> {
         qtrace!("Close WebTransport session {session_id:?}");
         // Capture stats BEFORE closing the session
-        let stats = self.webtransport_session_stats(session_id)?;
+        let stats = self.webtransport_session_stats(session_id, now)?;
         // Now close the session
         self.extended_connect_close_session(conn, session_id, error, message, now)?;
         Ok(stats)
@@ -1503,11 +1503,12 @@ impl Http3Connection {
     pub(crate) fn webtransport_session_stats(
         &self,
         session_id: StreamId,
+        now: Instant,
     ) -> Res<extended_connect::stats::WebTransportSessionStats> {
         self.recv_streams
             .get(&session_id)
             .and_then(|s| s.extended_connect_session())
-            .and_then(|s| s.borrow().stats())
+            .and_then(|s| s.borrow().stats(now))
             .ok_or(Error::InvalidStreamId)
     }
 

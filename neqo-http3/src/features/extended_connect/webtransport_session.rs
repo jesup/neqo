@@ -90,23 +90,23 @@ impl Session {
         self.send_groups.get(&group_id).map(SendGroup::session_id)
     }
 
-    pub(crate) fn record_bytes_sent(&mut self, bytes: u64) {
+    pub(crate) const fn record_bytes_sent(&mut self, bytes: u64) {
         self.stats.bytes_sent += bytes;
     }
 
-    pub(crate) fn record_bytes_received(&mut self, bytes: u64) {
+    pub(crate) const fn record_bytes_received(&mut self, bytes: u64) {
         self.stats.bytes_received += bytes;
     }
 
-    pub(crate) fn record_datagram_sent(&mut self) {
+    pub(crate) const fn record_datagram_sent(&mut self) {
         self.stats.datagrams_sent += 1;
     }
 
-    pub(crate) fn record_datagram_received(&mut self) {
+    pub(crate) const fn record_datagram_received(&mut self) {
         self.stats.datagrams_received += 1;
     }
 
-    pub(crate) fn record_stream_opened(&mut self, local: bool) {
+    pub(crate) const fn record_stream_opened(&mut self, local: bool) {
         if local {
             self.stats.streams_opened_local += 1;
         } else {
@@ -115,24 +115,24 @@ impl Session {
     }
 
     #[expect(dead_code, reason = "pending datagram stats update")]
-    pub(crate) fn record_datagram_expired_outgoing(&mut self) {
+    pub(crate) const fn record_datagram_expired_outgoing(&mut self) {
         self.stats.expired_outgoing += 1;
     }
 
     #[expect(dead_code, reason = "pending datagram stats update")]
-    pub(crate) fn record_datagram_lost_outgoing(&mut self) {
+    pub(crate) const fn record_datagram_lost_outgoing(&mut self) {
         self.stats.lost_outgoing += 1;
     }
 
     #[expect(dead_code, reason = "pending datagram stats update")]
-    pub(crate) fn record_datagram_dropped_incoming(&mut self) {
+    pub(crate) const fn record_datagram_dropped_incoming(&mut self) {
         self.stats.dropped_incoming += 1;
     }
 
     #[must_use]
-    pub(crate) fn stats(&self) -> WebTransportSessionStats {
+    pub(crate) fn stats(&self, now: Instant) -> WebTransportSessionStats {
         let mut stats = self.stats.clone();
-        stats.timestamp = Some(Instant::now());
+        stats.timestamp = Some(now);
         stats
     }
 }
@@ -309,27 +309,27 @@ impl Protocol for Session {
     }
 
     fn record_bytes_sent(&mut self, bytes: u64) {
-        Session::record_bytes_sent(self, bytes);
+        self.record_bytes_sent(bytes);
     }
 
     fn record_bytes_received(&mut self, bytes: u64) {
-        Session::record_bytes_received(self, bytes);
+        self.record_bytes_received(bytes);
     }
 
     fn record_datagram_sent(&mut self) {
-        Session::record_datagram_sent(self);
+        self.record_datagram_sent();
     }
 
     fn record_datagram_received(&mut self) {
-        Session::record_datagram_received(self);
+        self.record_datagram_received();
     }
 
     fn record_stream_opened(&mut self, local: bool) {
-        Session::record_stream_opened(self, local);
+        self.record_stream_opened(local);
     }
 
-    fn stats(&self) -> Option<WebTransportSessionStats> {
-        Some(Session::stats(self))
+    fn stats(&self, now: Instant) -> Option<WebTransportSessionStats> {
+        Some(self.stats(now))
     }
 
     fn write_datagram_prefix(&self, _encoder: &mut Encoder) {

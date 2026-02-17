@@ -31,7 +31,7 @@ use crate::{
     ReceiveOutput, Res, SendGroupId,
     client_events::{Http3ClientEvent, Http3ClientEvents, WebTransportEvent},
     connection::{Http3Connection, Http3State, RequestDescription},
-    features::ConnectType,
+    features::{ConnectType, extended_connect::stats::WebTransportSessionStats},
     frames::HFrame,
     push_controller::{PushController, RecvPushEvents},
     recv_message::{RecvMessage, RecvMessageInfo},
@@ -1497,8 +1497,10 @@ impl Http3Client {
     pub fn webtransport_session_stats(
         &self,
         session_id: StreamId,
-    ) -> Res<crate::features::extended_connect::stats::WebTransportSessionStats> {
-        self.base_handler.webtransport_session_stats(session_id)
+        now: Instant,
+    ) -> Res<WebTransportSessionStats> {
+        self.base_handler
+            .webtransport_session_stats(session_id, now)
     }
 
     /// Create a WebTransport stream with a send group.

@@ -10,6 +10,10 @@
 
 use std::time::Instant;
 
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WebTransportSessionStats is the canonical API name"
+)]
 #[derive(Debug, Clone, Default)]
 pub struct WebTransportSessionStats {
     pub timestamp: Option<Instant>,
@@ -28,9 +32,6 @@ pub struct WebTransportSessionStats {
 impl WebTransportSessionStats {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            timestamp: Some(Instant::now()),
-            ..Default::default()
-        }
+        Self::default()
     }
 }

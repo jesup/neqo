@@ -463,8 +463,8 @@ impl Session {
     }
 
     #[must_use]
-    pub(crate) fn stats(&self) -> Option<WebTransportSessionStats> {
-        self.protocol.stats()
+    pub(crate) fn stats(&self, now: Instant) -> Option<WebTransportSessionStats> {
+        self.protocol.stats(now)
     }
 
     fn has_data_to_send(&self) -> bool {
@@ -649,7 +649,7 @@ pub(crate) trait Protocol: Debug + Display {
 
     fn record_stream_opened(&mut self, _local: bool) {}
 
-    fn stats(&self) -> Option<WebTransportSessionStats> {
+    fn stats(&self, _now: Instant) -> Option<WebTransportSessionStats> {
         None
     }
 
