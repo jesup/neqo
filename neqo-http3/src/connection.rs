@@ -34,7 +34,7 @@ use crate::{
         ConnectType,
         extended_connect::{
             self, ExtendedConnectEvents, ExtendedConnectFeature, ExtendedConnectType,
-            send_group::SendGroupId,
+            send_group::Id as SendGroupId,
             webtransport_streams::{WebTransportRecvStream, WebTransportSendStream},
         },
     },
@@ -1084,6 +1084,11 @@ impl Http3Connection {
         send_stream.set_send_group(sendgroup)
     }
 
+    /// Clear the stream `SendGroup`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidStreamId` if the stream id doesn't exist or the stream doesn't support send groups
     pub fn stream_clear_sendgroup(&mut self, stream_id: StreamId) -> Res<()> {
         let send_stream = self
             .send_streams
@@ -1455,10 +1460,6 @@ impl Http3Connection {
         Ok(stream.session_protocol())
     }
 
-    /// Create a new send group for a WebTransport session.
-    ///
-    /// # Errors
-    /// Returns error if session doesn't exist or is not a WebTransport session.
     /// Register a send group with a caller-provided ID for a WebTransport session.
     ///
     /// # Errors
@@ -1595,11 +1596,10 @@ impl Http3Connection {
             return Err(Error::InvalidStreamId);
         }
 
-        // Validate send group if provided
-        if let Some(group_id) = send_group {
-            if !self.webtransport_validate_send_group(session_id, group_id)? {
-                return Err(Error::InvalidState);
-            }
+        if let Some(group_id) = send_group
+            && !self.webtransport_validate_send_group(session_id, group_id)?
+        {
+            return Err(Error::InvalidState);
         }
 
         let stream_id = conn
@@ -1653,6 +1653,10 @@ impl Http3Connection {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper with many stream parameters"
+    )]
     fn webtransport_create_stream_internal(
         &mut self,
         webtransport_session: Rc<RefCell<extended_connect::session::Session>>,

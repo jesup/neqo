@@ -21,7 +21,7 @@ use crate::{
     SendStream, Stream,
     features::extended_connect::{
         ExtendedConnectEvents, ExtendedConnectType, HeaderListener, Headers,
-        send_group::SendGroupId,
+        send_group::Id as SendGroupId,
     },
     frames::HFrame,
     priority::PriorityHandler,

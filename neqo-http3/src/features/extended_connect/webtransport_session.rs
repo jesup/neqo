@@ -20,7 +20,7 @@ use crate::{
     Error, Http3StreamInfo, Http3StreamType, RecvStream, Res, SendStream,
     features::extended_connect::{
         CloseReason, ExtendedConnectEvents, ExtendedConnectType,
-        send_group::{SendGroup, SendGroupId},
+        send_group::{Id as SendGroupId, SendGroup},
         session::{DgramContextIdError, Protocol, State},
     },
     frames::{FrameReader, StreamReaderRecvStreamWrapper, WebTransportFrame},
@@ -83,7 +83,7 @@ impl Session {
     /// Get the session ID for a send group.
     #[expect(dead_code, reason = "pending send group routing integration")]
     pub(crate) fn send_group_session(&self, group_id: SendGroupId) -> Option<StreamId> {
-        self.send_groups.get(&group_id).map(|g| g.session_id())
+        self.send_groups.get(&group_id).map(SendGroup::session_id)
     }
 }
 
@@ -251,11 +251,11 @@ impl Protocol for Session {
     }
 
     fn register_send_group(&mut self, id: SendGroupId) -> Res<()> {
-        Session::register_send_group(self, id)
+        self.register_send_group(id)
     }
 
     fn validate_send_group(&self, group_id: SendGroupId) -> bool {
-        Session::validate_send_group(self, group_id)
+        self.validate_send_group(group_id)
     }
 
     fn write_datagram_prefix(&self, _encoder: &mut Encoder) {

@@ -9,7 +9,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 use neqo_common::Encoder;
 use neqo_transport::{Connection, StreamId, recv_stream, send_stream};
 
-use super::{send_group::SendGroupId, session::Session};
+use super::{send_group::Id as SendGroupId, session::Session};
 use crate::{
     CloseType, Http3StreamInfo, Http3StreamType, ReceiveOutput, RecvStream, RecvStreamEvents, Res,
     SendStream, SendStreamEvents, Stream,
@@ -165,16 +165,15 @@ impl WebTransportSendStream {
     }
 
     #[expect(dead_code, reason = "pending send group further integration")]
-    pub(crate) fn send_group(&self) -> Option<SendGroupId> {
+    pub(crate) const fn send_group(&self) -> Option<SendGroupId> {
         self.send_group
     }
 
     pub(crate) fn set_send_group(&mut self, send_group: Option<SendGroupId>) -> Res<()> {
-        // Validate that the send group belongs to this session if provided
-        if let Some(group_id) = send_group {
-            if !self.session.borrow().validate_send_group(group_id) {
-                return Err(crate::Error::InvalidState);
-            }
+        if let Some(group_id) = send_group
+            && !self.session.borrow().validate_send_group(group_id)
+        {
+            return Err(crate::Error::InvalidState);
         }
         self.send_group = send_group;
         Ok(())
