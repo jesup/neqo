@@ -342,6 +342,8 @@ impl WebTransportRequest {
         buf: &[u8],
         id: I,
         now: Instant,
+        send_group_id: u64,
+        send_order: i64,
     ) -> Res<()> {
         let session_id = self.stream_handler.stream_id();
         self.stream_handler
@@ -353,6 +355,8 @@ impl WebTransportRequest {
                 buf,
                 id,
                 now,
+                send_group_id,
+                send_order,
             )
     }
 
@@ -491,6 +495,8 @@ impl ConnectUdpRequest {
         buf: &[u8],
         id: I,
         now: Instant,
+        send_group_id: u64,
+        send_order: i64,
     ) -> Res<()> {
         let session_id = self.stream_handler.stream_id();
         self.stream_handler
@@ -502,6 +508,8 @@ impl ConnectUdpRequest {
                 buf,
                 id,
                 now,
+                send_group_id,
+                send_order,
             )
     }
 
